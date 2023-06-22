@@ -25,6 +25,8 @@ static const struct page_operations uninit_ops = {
 /* DO NOT MODIFY this function */
 void
 uninit_new (struct page *page, void *va, vm_initializer *init,
+
+
 		enum vm_type type, void *aux,
 		bool (*initializer)(struct page *, enum vm_type, void *)) {
 	ASSERT (page != NULL);
@@ -34,10 +36,10 @@ uninit_new (struct page *page, void *va, vm_initializer *init,
 		.va = va,
 		.frame = NULL, /* no frame for now */
 		.uninit = (struct uninit_page) {
-			.init = init,
+			.init = init, // lazy_load_segment
 			.type = type,
-			.aux = aux,
-			.page_initializer = initializer,
+			.aux = aux, // lazy_load_arg
+			.page_initializer = initializer, //anon
 		}
 	};
 }

@@ -25,6 +25,8 @@
 /* Project 2 */
 #include "threads/synch.h"
 
+/* Project 3 */
+#include "userprog/syscall.h"
 
 static void process_cleanup (void);
 static bool load (const char *file_name, struct intr_frame *if_);
@@ -197,7 +199,10 @@ static void
 	process_init ();
 	
 	/* Project 2 */
+	// lock_acquire(&filesys_lock);
 	sema_up(&parent->load);
+	// lock_release(&filesys_lock);
+
 	/* Finally, switch to the newly created process. */
 	if (succ)
 		do_iret (&if_);
@@ -225,8 +230,13 @@ process_exec (void *f_name) {
 	/* We first kill the current context */
 	process_cleanup ();
 
+
 	/* And then load the binary */
+	// printf("load start!\n");
+	lock_acquire(&filesys_lock);
 	success = load (file_name, &_if);
+	lock_release(&filesys_lock);
+	// printf("load end\n");
 
 	/* If load failed, quit. */
 	palloc_free_page (file_name);
@@ -253,6 +263,9 @@ process_wait (tid_t child_tid) {
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
+	enum intr_level old_level;
+	old_level = intr_disable ();
+
 	struct thread * cur = thread_current();
 	struct thread * child = NULL;
 	struct thread * temp = NULL;
@@ -264,11 +277,16 @@ process_wait (tid_t child_tid) {
 			break;
 		}
 	}
-	if(child == NULL) return -1;
-
+	if(child == NULL){
+		intr_set_level (old_level);
+		return -1;
+	}
+	intr_set_level (old_level);
 	sema_down(&child->wait);
-	list_remove(&child->child_elem);
 
+	old_level = intr_disable ();
+	list_remove(&child->child_elem);
+	intr_set_level (old_level);
 	sema_up(&child->exit);
 
 	return child->exit_status;
@@ -417,12 +435,12 @@ load (const char *file_name, struct intr_frame *if_) {
 	strlcpy(temp,file_name,128);
 
 	for(token = strtok_r(temp," ",&save_ptr); token!=NULL; token=strtok_r(NULL," ",&save_ptr),argc++) argv[argc] = token;
-
 	/* Allocate and activate page directory. */
 	t->pml4 = pml4_create ();
 	if (t->pml4 == NULL)
 		goto done;
 
+	// printf("file %s\n",argv[0]);
 
 	process_activate (thread_current ());
 
@@ -490,9 +508,11 @@ load (const char *file_name, struct intr_frame *if_) {
 						read_bytes = 0;
 						zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
 					}
+					// printf("load_segment start!\n");
 					if (!load_segment (file, file_page, (void *) mem_page,
 								read_bytes, zero_bytes, writable))
 						goto done;
+					// printf("load_segment end\n");
 				}
 				else
 					goto done;
@@ -680,6 +700,18 @@ lazy_load_segment (struct page *page, void *aux) {
 	/* TODO: Load the segment from the file */
 	/* TODO: This called when the first page fault occurs on address VA. */
 	/* TODO: VA is available when calling this function. */
+
+	struct lazy_load_arg *lazy_load_arg = (struct lazy_load_arg *)aux;
+	file_seek(lazy_load_arg->file, lazy_load_arg->ofs);
+	if (file_read(lazy_load_arg->file, page->frame->kva, lazy_load_arg->read_bytes) != (int)(lazy_load_arg->read_bytes))
+	{
+		palloc_free_page(page->frame->kva);
+		return false;
+	}
+	memset(page->frame->kva + lazy_load_arg->read_bytes, 0, lazy_load_arg->zero_bytes);
+	// free(lazy_load_arg);
+
+	return true;
 }
 
 /* Loads a segment starting at offset OFS in FILE at address
@@ -702,8 +734,10 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 	ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
 	ASSERT (pg_ofs (upage) == 0);
 	ASSERT (ofs % PGSIZE == 0);
-
+	// printf("va : %p\n",upage);
 	while (read_bytes > 0 || zero_bytes > 0) {
+		
+		// printf("read_bytes : %d, zero_bytes : %d\n",read_bytes, zero_bytes);
 		/* Do calculate how to fill this page.
 		 * We will read PAGE_READ_BYTES bytes from FILE
 		 * and zero the final PAGE_ZERO_BYTES bytes. */
@@ -711,15 +745,23 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
 		/* TODO: Set up aux to pass information to the lazy_load_segment. */
-		void *aux = NULL;
+		// void *aux = NULL;
+		struct lazy_load_arg *lazy_load_arg = (struct lazy_load_arg *)malloc(sizeof(struct lazy_load_arg));
+		lazy_load_arg->file = file;
+		lazy_load_arg->ofs = ofs;
+		lazy_load_arg->read_bytes = page_read_bytes;
+		lazy_load_arg->zero_bytes = page_zero_bytes;
+
 		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
-					writable, lazy_load_segment, aux))
+					writable, lazy_load_segment, lazy_load_arg))
 			return false;
 
 		/* Advance. */
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
 		upage += PGSIZE;
+		
+		ofs += page_read_bytes;
 	}
 	return true;
 }
@@ -735,6 +777,16 @@ setup_stack (struct intr_frame *if_) {
 	 * TODO: You should mark the page is stack. */
 	/* TODO: Your code goes here */
 
+	/* TODO: Your code goes here */
+	// if (vm_alloc_page_with_initializer(VM_ANON, stack_bottom, 1, NULL, NULL))
+	if (vm_alloc_page_with_initializer(VM_ANON | VM_MARKER_0, stack_bottom, 1, NULL, NULL))
+	// writable: 값을 넣어야 하니 True
+	// lazy_load를 하지 않을 거니까 init과 aux는 NULL
+	{
+		success = vm_claim_page(stack_bottom); // 페이지 요청
+		if (success)
+			if_->rsp = USER_STACK;
+	}
 	return success;
 }
 #endif /* VM */

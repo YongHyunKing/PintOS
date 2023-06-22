@@ -3,5 +3,6 @@
 
 void syscall_init (void);
 
-
+/* Project 2 */
+struct lock filesys_lock;
 #endif /* userprog/syscall.h */

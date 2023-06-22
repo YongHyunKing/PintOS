@@ -16,11 +16,14 @@
 #include "threads/synch.h"
 #include "threads/palloc.h"
 
+/* Project 3 */
+#include "vm/vm.h"
+
+
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
 
-/* Project 2 */
-struct lock filesys_lock;
+
 
 /* System call.
  *
@@ -39,7 +42,7 @@ void check_address(void *addr)
 {
 	if(addr == NULL) exit(-1);
 	if(!is_user_vaddr(addr)) exit(-1);
-  if (pml4_get_page(thread_current()->pml4, addr) == NULL) exit(-1);
+  // if (pml4_get_page(thread_current()->pml4, addr) == NULL) exit(-1);
 }
 
 
@@ -88,8 +91,11 @@ int wait(int pid)
 // 5.
 bool create(const char *file, unsigned initial_size)
 {
-    check_address(file);
-    return filesys_create(file, initial_size);
+  lock_acquire(&filesys_lock);
+	check_address(file);
+	bool success = filesys_create(file, initial_size);
+	lock_release(&filesys_lock);
+	return success;
 }
 
 // 6.
@@ -101,11 +107,15 @@ bool remove (const char *file) {
 // 7.
 int open (const char *file) {
 	check_address(file);
-
+	// printf("open!\n");
+	lock_acquire(&filesys_lock);
 	int fd;
 	struct thread *cur = thread_current();
 	struct file *file_obj = filesys_open(file);
-	if(cur->name==NULL || file_obj == NULL) return -1;
+	if(cur->name==NULL || file_obj == NULL){
+		lock_release(&filesys_lock);
+		return -1;
+	}
 	
 	for(fd=2;fd<128,cur->fdt[fd]!=NULL;fd++) continue;
 
@@ -117,7 +127,7 @@ int open (const char *file) {
 		cur->fdt[fd] = file_obj;
 		cur->fd = fd;
 	}
-
+	lock_release(&filesys_lock);
 	return fd;
 }
 
@@ -139,7 +149,6 @@ int read(int fd, void *buffer, unsigned size) {
 	unsigned char *buf = buffer;
 	int read_count;
 	check_address(buffer);
-
 	if(	fd < 0 || fd>=128) return -1;
 	
 	struct thread *cur = thread_current();
@@ -160,6 +169,12 @@ int read(int fd, void *buffer, unsigned size) {
 	else if (fd == 1) return -1;
 	else {
 		lock_acquire(&filesys_lock);
+		struct page *page = spt_find_page(&thread_current()->spt, buffer);
+		if (page && !page->writable)
+		{
+			lock_release(&filesys_lock);
+			exit(-1);
+		}
 		read_count = file_read(fileobj, buffer, size);
 		lock_release(&filesys_lock);
 
@@ -243,6 +258,9 @@ syscall_init (void) {
 void
 syscall_handler (struct intr_frame *f) {
 	int sys_number = f->R.rax; // rax: 시스템 콜 넘버
+#ifdef VM
+	thread_current()->rsp = f->rsp;
+#endif
 	// printf("sys_number : %d\n",sys_number);
     /* 
 	인자 들어오는 순서:

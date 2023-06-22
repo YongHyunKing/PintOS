@@ -4,6 +4,10 @@
     "stdio.h": "c",
     "thread.h": "c",
     "*.inc": "c",
-    "main.h": "c"
+    "main.h": "c",
+    "interrupt.h": "c",
+    "syscall.h": "c",
+    "process.h": "c",
+    "mmu.h": "c"
   }
 }

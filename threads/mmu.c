@@ -235,11 +235,13 @@ pml4_set_page (uint64_t *pml4, void *upage, void *kpage, bool rw) {
 	ASSERT (pg_ofs (kpage) == 0);
 	ASSERT (is_user_vaddr (upage));
 	ASSERT (pml4 != base_pml4);
-
+	// printf("va : %p\n",upage);
 	uint64_t *pte = pml4e_walk (pml4, (uint64_t) upage, 1);
-
+	// printf("before pa : %p\n",*pte);
+	// printf("kpage va : %p\n",kpage);
 	if (pte)
 		*pte = vtop (kpage) | PTE_P | (rw ? PTE_W : 0) | PTE_U;
+	// printf("after pa : %p\n",*pte);
 	return pte != NULL;
 }
 
