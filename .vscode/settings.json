@@ -4,6 +4,9 @@
     "stdio.h": "c",
     "thread.h": "c",
     "*.inc": "c",
-    "main.h": "c"
+    "main.h": "c",
+    "vaddr.h": "c",
+    "synch.h": "c",
+    "palloc.h": "c"
   }
 }

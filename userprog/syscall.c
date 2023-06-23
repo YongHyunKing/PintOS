@@ -16,6 +16,9 @@
 #include "threads/synch.h"
 #include "threads/palloc.h"
 
+/* Project 3 */
+#include "threads/pte.h"
+
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
 
@@ -39,7 +42,7 @@ void check_address(void *addr)
 {
 	if(addr == NULL) exit(-1);
 	if(!is_user_vaddr(addr)) exit(-1);
-  if (pml4_get_page(thread_current()->pml4, addr) == NULL) exit(-1);
+  // if (pml4_get_page(thread_current()->pml4, addr) == NULL) exit(-1);
 }
 
 struct list_elem *
@@ -50,8 +53,10 @@ find_fd_in_fdt(struct thread * cur, int fd)
 	for (e = list_begin(&cur->fdt); e != list_end(&cur->fdt); e = list_next(e))
 	{
 		file_des = list_entry(e, struct file_descriptor, elem);
+	
 		if(file_des->fd == fd) return e;
 	}
+
 	return NULL;
 }
 
@@ -79,7 +84,6 @@ int fork(const char *thread_name, struct intr_frame *f)
 // 3.
 int exec(const char *cmd_line)
 {
-
 	check_address(cmd_line);
 	char * cmd_line_copy;
 	cmd_line_copy = palloc_get_page(0);
@@ -116,11 +120,12 @@ int open (const char *file) {
 	check_address(file);
 	struct thread * cur = thread_current();
 
-	if(cur->next_fd > 128) return -1;
+	// if(cur->next_fd > 128) return -1;
 	if(*file == NULL) return -1;
 
 	struct file * fp = filesys_open(file);
 	if(fp == NULL) return -1;
+	
 
 	struct file_descriptor * new_fd = malloc(sizeof(struct file_descriptor));
 	cur->next_fd++;
@@ -128,7 +133,6 @@ int open (const char *file) {
 	new_fd->file = fp;
 
 	list_push_back(&cur->fdt, &new_fd->elem);
-
 	return new_fd->fd;
 }
 
@@ -150,11 +154,16 @@ int filesize(int fd) {
 int read(int fd, void *buffer, unsigned size) {
 	// 유효한 주소인지부터 체크
 	unsigned char *buf = buffer;
-	check_address(buffer);
+	check_address(buf);
+	// printf("read start!\n");
+	struct page * p = spt_find_page (&thread_current()->spt, buffer);
+	
+	if(p!=NULL && !p->writable){
+		exit(-1);
+	}
 
 	/* STDOUT일 때: -1 반환 */
 	if (fd == 1) return -1;
-
 	/* STDIN일 때: */
 	if (fd == 0) return input_getc();
 
@@ -167,9 +176,10 @@ int read(int fd, void *buffer, unsigned size) {
 	if(file_des->file == NULL) return -1;
 
 	lock_acquire(&filesys_lock);
+
 	buff_size = file_read(file_des->file, buffer, size);
 	lock_release(&filesys_lock);
-
+	
 	return buff_size;
 }
 
@@ -177,8 +187,8 @@ int read(int fd, void *buffer, unsigned size) {
 
 // 10.
 int write (int fd, const void *buffer, unsigned size) {
-	check_address(buffer);
-	// check_address(buffer + size);
+	unsigned char *buf = buffer;
+	check_address(buf);
 
 	if(fd <= 0) return -1;
 
@@ -261,6 +271,9 @@ syscall_init (void) {
 void
 syscall_handler (struct intr_frame *f) {
 	int sys_number = f->R.rax; // rax: 시스템 콜 넘버
+#ifdef VM
+	thread_current()->rsp = f->rsp;
+#endif
     /* 
 	인자 들어오는 순서:
 	1번째 인자: %rdi

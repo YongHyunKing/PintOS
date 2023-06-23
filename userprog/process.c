@@ -184,6 +184,8 @@ static void
 		parent_des = list_entry(e, struct file_descriptor, elem);
 		if(parent_des->file){
 			temp = malloc(sizeof(struct file_descriptor));
+			if(temp == NULL)
+				goto error;
 			temp->file = file_duplicate(parent_des->file);
 			temp->fd = parent_des->fd;
 			list_push_back(&cur->fdt, &temp->elem);
@@ -250,10 +252,13 @@ process_wait (tid_t child_tid) {
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
+	enum intr_level old_level;
+	old_level = intr_disable ();
+
 	struct thread * cur = thread_current();
 	struct thread * child = NULL;
 	struct thread * temp = NULL;
-
+	int exit_status = 0;
 	for(struct list_elem * e = list_begin(&cur->children); e != list_end(&cur->children); e = list_next(e)){
 		temp = list_entry(e, struct thread, child_elem);
 		if(temp->tid == child_tid){
@@ -261,14 +266,20 @@ process_wait (tid_t child_tid) {
 			break;
 		}
 	}
-	if(child == NULL) return -1;
+	if(child == NULL){
+		intr_set_level (old_level);
+		return -1;
+	}
+
+	intr_set_level (old_level);
 
 	sema_down(&child->wait);
 	list_remove(&child->child_elem);
+	exit_status = child->exit_status;
 
 	sema_up(&child->exit);
 
-	return child->exit_status;
+	return exit_status;
 }
 
 /* Exit the process. This function is called by thread_exit (). */
@@ -279,8 +290,8 @@ process_exit (void) {
 	 * TODO: Implement process termination message (see
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
-
-
+	enum intr_level old_level;
+	old_level = intr_disable ();
 	struct list_elem * e;
 	struct list_elem * next;
 	struct file_descriptor * file_des;
@@ -291,9 +302,6 @@ process_exit (void) {
 		free(file_des);
 		e = next;
 	}
-
-
-
 	
 	file_close(cur->exec_file);
 
@@ -301,7 +309,7 @@ process_exit (void) {
 
 
 	sema_up(&cur->wait);
-
+	intr_set_level (old_level);
 	sema_down(&cur->exit);
 }
 
@@ -686,6 +694,15 @@ lazy_load_segment (struct page *page, void *aux) {
 	/* TODO: Load the segment from the file */
 	/* TODO: This called when the first page fault occurs on address VA. */
 	/* TODO: VA is available when calling this function. */
+	struct lazy_load_arg *lazy_load_arg = (struct lazy_load_arg *)aux;
+	file_seek(lazy_load_arg->file, lazy_load_arg->ofs);
+	if (file_read(lazy_load_arg->file, page->frame->kva, lazy_load_arg->read_bytes) != (int)(lazy_load_arg->read_bytes))
+	{
+		palloc_free_page(page->frame->kva);
+		return false;
+	}
+	memset(page->frame->kva + lazy_load_arg->read_bytes, 0, lazy_load_arg->zero_bytes);
+	return true;
 }
 
 /* Loads a segment starting at offset OFS in FILE at address
@@ -717,15 +734,21 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
 		/* TODO: Set up aux to pass information to the lazy_load_segment. */
-		void *aux = NULL;
+		struct lazy_load_arg *lazy_load_arg = (struct lazy_load_arg *)malloc(sizeof(struct lazy_load_arg));
+		lazy_load_arg->file = file;
+		lazy_load_arg->ofs = ofs;
+		lazy_load_arg->read_bytes = page_read_bytes;
+		lazy_load_arg->zero_bytes = page_zero_bytes;
+
 		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
-					writable, lazy_load_segment, aux))
+					writable, lazy_load_segment, lazy_load_arg))
 			return false;
 
 		/* Advance. */
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
 		upage += PGSIZE;
+		ofs += page_read_bytes;
 	}
 	return true;
 }
@@ -741,6 +764,12 @@ setup_stack (struct intr_frame *if_) {
 	 * TODO: You should mark the page is stack. */
 	/* TODO: Your code goes here */
 
+	if (vm_alloc_page_with_initializer(VM_ANON | VM_MARKER_0, stack_bottom, 1, NULL, NULL))
+	{
+		success = vm_claim_page(stack_bottom); // 페이지 요청
+		if (success)
+			if_->rsp = USER_STACK;
+	}
 	return success;
 }
 #endif /* VM */

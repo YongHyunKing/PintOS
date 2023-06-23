@@ -37,14 +37,6 @@ struct file_descriptor
 	int fd;	
 };
 
-struct 
-child {
-	struct list_elem elem;
-	tid_t tid;
-	int exit_status;
-	bool die;
-	struct thread * cur;
-};
 
 /* A kernel thread or user process.
  *
@@ -149,6 +141,8 @@ struct thread {
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */
 	struct supplemental_page_table spt;
+	/* Project 3 */
+	void * rsp;
 #endif
 
 	/* Owned by thread.c. */
@@ -199,5 +193,7 @@ void preemption(void);
 void priority_donation(void);
 void remove_donators (struct lock *lock);
 void update_priority (void);
+
+struct list all_thread;
 
 #endif /* threads/thread.h */
