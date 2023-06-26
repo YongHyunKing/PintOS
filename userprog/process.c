@@ -24,6 +24,8 @@
 
 /* Project 2 */
 #include "threads/synch.h"
+/* Project 3 */
+#include "userprog/syscall.h"
 
 
 static void process_cleanup (void);
@@ -225,8 +227,9 @@ process_exec (void *f_name) {
 	process_cleanup ();
 
 	/* And then load the binary */
+	lock_acquire(&filesys_lock);
 	success = load (file_name, &_if);
-
+	lock_release(&filesys_lock);
 	/* If load failed, quit. */
 	palloc_free_page (file_name);
 	if (!success)
@@ -290,8 +293,9 @@ process_exit (void) {
 	 * TODO: Implement process termination message (see
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
-	enum intr_level old_level;
-	old_level = intr_disable ();
+	// enum intr_level old_level;
+	// old_level = intr_disable ();
+	// intr_set_level (old_level);
 	struct list_elem * e;
 	struct list_elem * next;
 	struct file_descriptor * file_des;
@@ -306,10 +310,11 @@ process_exit (void) {
 	file_close(cur->exec_file);
 
 	process_cleanup ();
+	hash_destroy(&cur->spt.spt_hash, NULL);
 
 
 	sema_up(&cur->wait);
-	intr_set_level (old_level);
+	
 	sema_down(&cur->exit);
 }
 
@@ -689,7 +694,8 @@ install_page (void *upage, void *kpage, bool writable) {
  * If you want to implement the function for only project 2, implement it on the
  * upper block. */
 
-static bool
+// static bool
+bool
 lazy_load_segment (struct page *page, void *aux) {
 	/* TODO: Load the segment from the file */
 	/* TODO: This called when the first page fault occurs on address VA. */

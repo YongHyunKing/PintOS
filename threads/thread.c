@@ -259,7 +259,6 @@ thread_unblock (struct thread *t) {
 	enum intr_level old_level;
 
 	ASSERT (is_thread (t));
-
 	old_level = intr_disable ();
 	ASSERT (t->status == THREAD_BLOCKED);
 	/* default */
@@ -744,12 +743,14 @@ void
 remove_donators (struct lock *lock){
   struct list_elem *e;
   struct thread *cur = thread_current ();
-
+	enum intr_level old_level;
+	old_level = intr_disable ();
   for (e = list_begin (&cur->donators); e != list_end (&cur->donators); e = list_next (e)){
     struct thread *t = list_entry (e, struct thread, donators_elem);
     if (t->wait_on_lock == lock)
       list_remove (&t->donators_elem);
   }
+	intr_set_level (old_level);
 }
 
 void

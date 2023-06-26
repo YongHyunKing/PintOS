@@ -22,9 +22,6 @@
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
 
-/* Project 2 */
-struct lock filesys_lock;
-
 /* System call.
  *
  * Previously system call services was handled by the interrupt handler
@@ -105,8 +102,9 @@ int wait(int pid)
 // 5.
 bool create(const char *file, unsigned initial_size)
 {
-    check_address(file);
-    return filesys_create(file, initial_size);
+  check_address(file);
+
+  return filesys_create(file, initial_size);
 }
 
 // 6.
@@ -122,7 +120,7 @@ int open (const char *file) {
 
 	// if(cur->next_fd > 128) return -1;
 	if(*file == NULL) return -1;
-
+	lock_acquire(&filesys_lock);
 	struct file * fp = filesys_open(file);
 	if(fp == NULL) return -1;
 	
@@ -133,6 +131,7 @@ int open (const char *file) {
 	new_fd->file = fp;
 
 	list_push_back(&cur->fdt, &new_fd->elem);
+	lock_release(&filesys_lock);
 	return new_fd->fd;
 }
 
@@ -155,7 +154,7 @@ int read(int fd, void *buffer, unsigned size) {
 	// 유효한 주소인지부터 체크
 	unsigned char *buf = buffer;
 	check_address(buf);
-	// printf("read start!\n");
+
 	struct page * p = spt_find_page (&thread_current()->spt, buffer);
 	
 	if(p!=NULL && !p->writable){
@@ -253,6 +252,42 @@ void close(int fd)
 	list_remove(&file_des->elem);
 }
 
+void *mmap(void *addr, size_t length, int writable, int fd, off_t offset)
+{
+	// check_address(addr);
+	struct thread *cur = thread_current();
+	if(fd<2 || fd > 128) return NULL;
+	if (!addr || addr != pg_round_down(addr))
+		return NULL;
+
+	if (offset != pg_round_down(offset))
+		return NULL;
+
+	if(!(addr + length)) return NULL;
+
+	if (!is_user_vaddr(addr) || !is_user_vaddr((uint64_t)addr + (uint64_t)length))
+		return NULL;
+
+	if (spt_find_page(&thread_current()->spt, addr))
+		return NULL;
+
+	struct list_elem * e = find_fd_in_fdt(cur,fd);
+	if(e == NULL) return NULL;
+	struct file_descriptor * file_des = list_entry(e,struct file_descriptor, elem);
+
+	if(file_des->file == NULL) return -1;
+	if (file_length(file_des->file) == 0 || (int) length == 0)
+		return NULL;
+
+	return do_mmap(addr, length, writable, file_des->file, offset); // 파일이 매핑된 가상 주소 반환
+}
+
+void munmap(void *addr)
+{
+	// check_address(addr);
+	do_munmap(addr);
+}
+
 void
 syscall_init (void) {
 	write_msr(MSR_STAR, ((uint64_t)SEL_UCSEG - 0x10) << 48  |
@@ -326,7 +361,12 @@ syscall_handler (struct intr_frame *f) {
 			break;
 		case SYS_CLOSE:
 			close(f->R.rdi);
-		default:
+			break;
+		case SYS_MMAP:
+			f->R.rax = mmap(f->R.rdi, f->R.rsi, f->R.rdx, f->R.r10, f->R.r8);
+			break;
+		case SYS_MUNMAP:
+			munmap(f->R.rdi);
 			break;
 	}
 }
