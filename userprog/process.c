@@ -24,6 +24,8 @@
 
 /* Project 2 */
 #include "threads/synch.h"
+/* Project 3 */
+#include "userprog/syscall.h"
 
 
 static void process_cleanup (void);
@@ -145,7 +147,7 @@ static void
  __do_fork (void *aux) {
 	struct intr_frame if_;
 	struct thread *parent = (struct thread *) aux;
-	struct thread *current = thread_current ();
+	struct thread *cur = thread_current ();
 	/* TODO: somehow pass the parent_if. (i.e. process_fork()'s if_) */
 	// default
 	// struct intr_frame *parent_if;
@@ -157,14 +159,14 @@ static void
 	if_.R.rax = 0;
 
 	/* 2. Duplicate PT */
-	current->pml4 = pml4_create();
-	if (current->pml4 == NULL)
+	cur->pml4 = pml4_create();
+	if (cur->pml4 == NULL)
 		goto error;
 
-	process_activate (current);
+	process_activate (cur);
 #ifdef VM
-	supplemental_page_table_init (&current->spt);
-	if (!supplemental_page_table_copy (&current->spt, &parent->spt))
+	supplemental_page_table_init (&cur->spt);
+	if (!supplemental_page_table_copy (&cur->spt, &parent->spt))
 		goto error;
 #else
 	if (!pml4_for_each (parent->pml4, duplicate_pte, parent))
@@ -177,22 +179,21 @@ static void
 	 * TODO:       from the fork() until this function successfully duplicates
 	 * TODO:       the resources of parent.*/
 
-	// for (int i = 2; i < 128; i++)
-	// {
-	// 		if(parent->fdt[i] !=NULL)
-	// 			current->fdt[i] = file_duplicate(parent->fdt[i]);
-	// }
-
-	 for (int i = 0; i < 128; i++)
-    {
-        struct file *file = parent->fdt[i];
-        if (file == NULL)
-            continue;
-        if (file > 2)
-            file = file_duplicate(file);
-        current->fdt[i] = file;
-    }
-
+	struct list_elem * e;
+	struct file_descriptor * parent_des;
+	struct file_descriptor * temp;
+	for(e = list_begin(&parent->fdt); e != list_end(&parent->fdt); e = list_next(e)){
+		parent_des = list_entry(e, struct file_descriptor, elem);
+		if(parent_des->file){
+			temp = malloc(sizeof(struct file_descriptor));
+			if(temp == NULL)
+				goto error;
+			temp->file = file_duplicate(parent_des->file);
+			temp->fd = parent_des->fd;
+			list_push_back(&cur->fdt, &temp->elem);
+		}
+	}
+	cur->next_fd = parent->next_fd;
 	
 	process_init ();
 	
@@ -226,8 +227,9 @@ process_exec (void *f_name) {
 	process_cleanup ();
 
 	/* And then load the binary */
+	lock_acquire(&filesys_lock);
 	success = load (file_name, &_if);
-
+	lock_release(&filesys_lock);
 	/* If load failed, quit. */
 	palloc_free_page (file_name);
 	if (!success)
@@ -253,10 +255,13 @@ process_wait (tid_t child_tid) {
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
+	enum intr_level old_level;
+	old_level = intr_disable ();
+
 	struct thread * cur = thread_current();
 	struct thread * child = NULL;
 	struct thread * temp = NULL;
-
+	int exit_status = 0;
 	for(struct list_elem * e = list_begin(&cur->children); e != list_end(&cur->children); e = list_next(e)){
 		temp = list_entry(e, struct thread, child_elem);
 		if(temp->tid == child_tid){
@@ -264,39 +269,53 @@ process_wait (tid_t child_tid) {
 			break;
 		}
 	}
-	if(child == NULL) return -1;
+	if(child == NULL){
+		intr_set_level (old_level);
+		return -1;
+	}
+
+	intr_set_level (old_level);
 
 	sema_down(&child->wait);
 	list_remove(&child->child_elem);
+	exit_status = child->exit_status;
 
 	sema_up(&child->exit);
 
-	return child->exit_status;
+	return exit_status;
 }
 
 /* Exit the process. This function is called by thread_exit (). */
 void
 process_exit (void) {
-	struct thread *curr = thread_current ();
+	struct thread *cur = thread_current ();
 	/* TODO: Your code goes here.
 	 * TODO: Implement process termination message (see
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
-
-
- 	for (int i = 2; i < 128; i++)
-        close(i);
-	// palloc_free_page(curr->fdt);
-	palloc_free_multiple(curr->fdt, 3);
+	// enum intr_level old_level;
+	// old_level = intr_disable ();
+	// intr_set_level (old_level);
+	struct list_elem * e;
+	struct list_elem * next;
+	struct file_descriptor * file_des;
+	for(e = list_begin(&cur->fdt); e!=list_end(&cur->fdt); ){
+		next = list_remove(e);
+		file_des = list_entry(e, struct file_descriptor, elem);
+		file_close(file_des->file);
+		free(file_des);
+		e = next;
+	}
 	
-	file_close(curr->exec_file);
+	file_close(cur->exec_file);
 
 	process_cleanup ();
+	hash_destroy(&cur->spt.spt_hash, NULL);
 
 
-	sema_up(&curr->wait);
-
-	sema_down(&curr->exit);
+	sema_up(&cur->wait);
+	
+	sema_down(&cur->exit);
 }
 
 /* Free the current process's resources. */
@@ -675,11 +694,21 @@ install_page (void *upage, void *kpage, bool writable) {
  * If you want to implement the function for only project 2, implement it on the
  * upper block. */
 
-static bool
+// static bool
+bool
 lazy_load_segment (struct page *page, void *aux) {
 	/* TODO: Load the segment from the file */
 	/* TODO: This called when the first page fault occurs on address VA. */
 	/* TODO: VA is available when calling this function. */
+	struct lazy_load_arg *lazy_load_arg = (struct lazy_load_arg *)aux;
+	file_seek(lazy_load_arg->file, lazy_load_arg->ofs);
+	if (file_read(lazy_load_arg->file, page->frame->kva, lazy_load_arg->read_bytes) != (int)(lazy_load_arg->read_bytes))
+	{
+		palloc_free_page(page->frame->kva);
+		return false;
+	}
+	memset(page->frame->kva + lazy_load_arg->read_bytes, 0, lazy_load_arg->zero_bytes);
+	return true;
 }
 
 /* Loads a segment starting at offset OFS in FILE at address
@@ -711,15 +740,21 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
 		/* TODO: Set up aux to pass information to the lazy_load_segment. */
-		void *aux = NULL;
+		struct lazy_load_arg *lazy_load_arg = (struct lazy_load_arg *)malloc(sizeof(struct lazy_load_arg));
+		lazy_load_arg->file = file;
+		lazy_load_arg->ofs = ofs;
+		lazy_load_arg->read_bytes = page_read_bytes;
+		lazy_load_arg->zero_bytes = page_zero_bytes;
+
 		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
-					writable, lazy_load_segment, aux))
+					writable, lazy_load_segment, lazy_load_arg))
 			return false;
 
 		/* Advance. */
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
 		upage += PGSIZE;
+		ofs += page_read_bytes;
 	}
 	return true;
 }
@@ -735,6 +770,12 @@ setup_stack (struct intr_frame *if_) {
 	 * TODO: You should mark the page is stack. */
 	/* TODO: Your code goes here */
 
+	if (vm_alloc_page_with_initializer(VM_ANON | VM_MARKER_0, stack_bottom, 1, NULL, NULL))
+	{
+		success = vm_claim_page(stack_bottom); // 페이지 요청
+		if (success)
+			if_->rsp = USER_STACK;
+	}
 	return success;
 }
 #endif /* VM */

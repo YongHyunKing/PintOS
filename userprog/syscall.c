@@ -16,11 +16,11 @@
 #include "threads/synch.h"
 #include "threads/palloc.h"
 
+/* Project 3 */
+#include "threads/pte.h"
+
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
-
-/* Project 2 */
-struct lock filesys_lock;
 
 /* System call.
  *
@@ -39,7 +39,22 @@ void check_address(void *addr)
 {
 	if(addr == NULL) exit(-1);
 	if(!is_user_vaddr(addr)) exit(-1);
-  if (pml4_get_page(thread_current()->pml4, addr) == NULL) exit(-1);
+  // if (pml4_get_page(thread_current()->pml4, addr) == NULL) exit(-1);
+}
+
+struct list_elem *
+find_fd_in_fdt(struct thread * cur, int fd)
+{
+	struct list_elem * e;
+	struct file_descriptor * file_des; 
+	for (e = list_begin(&cur->fdt); e != list_end(&cur->fdt); e = list_next(e))
+	{
+		file_des = list_entry(e, struct file_descriptor, elem);
+	
+		if(file_des->fd == fd) return e;
+	}
+
+	return NULL;
 }
 
 
@@ -66,7 +81,6 @@ int fork(const char *thread_name, struct intr_frame *f)
 // 3.
 int exec(const char *cmd_line)
 {
-
 	check_address(cmd_line);
 	char * cmd_line_copy;
 	cmd_line_copy = palloc_get_page(0);
@@ -88,8 +102,9 @@ int wait(int pid)
 // 5.
 bool create(const char *file, unsigned initial_size)
 {
-    check_address(file);
-    return filesys_create(file, initial_size);
+  check_address(file);
+
+  return filesys_create(file, initial_size);
 }
 
 // 6.
@@ -101,128 +116,176 @@ bool remove (const char *file) {
 // 7.
 int open (const char *file) {
 	check_address(file);
+	struct thread * cur = thread_current();
 
-	int fd;
-	struct thread *cur = thread_current();
-	struct file *file_obj = filesys_open(file);
-	if(cur->name==NULL || file_obj == NULL) return -1;
+	// if(cur->next_fd > 128) return -1;
+	if(*file == NULL) return -1;
+	lock_acquire(&filesys_lock);
+	struct file * fp = filesys_open(file);
+	if(fp == NULL) return -1;
 	
-	for(fd=2;fd<128,cur->fdt[fd]!=NULL;fd++) continue;
 
-	if(fd==128){
-		file_close(file_obj);
-		fd = -1;
-	}
-	else{
-		cur->fdt[fd] = file_obj;
-		cur->fd = fd;
-	}
+	struct file_descriptor * new_fd = malloc(sizeof(struct file_descriptor));
+	cur->next_fd++;
+	new_fd->fd = cur->next_fd;
+	new_fd->file = fp;
 
-	return fd;
+	list_push_back(&cur->fdt, &new_fd->elem);
+	lock_release(&filesys_lock);
+	return new_fd->fd;
 }
 
 // 8.
 int filesize(int fd) {
 
-	if(	fd < 0 || fd >= 128) return -1;
-
 	struct thread * cur = thread_current();
-	struct file *fileobj = cur->fdt[fd];
-	if (fileobj == NULL) return -1;
+	struct list_elem * e = find_fd_in_fdt(cur,fd);
+	if(e == NULL) return -1;
 
-	return file_length(fileobj);
+	struct file_descriptor * file_des = list_entry(e,struct file_descriptor, elem);
+
+	if(file_des->file == NULL) exit(-1);
+
+	return file_length(file_des->file);
 }
 
 // 9.
 int read(int fd, void *buffer, unsigned size) {
 	// 유효한 주소인지부터 체크
 	unsigned char *buf = buffer;
-	int read_count;
-	check_address(buffer);
+	check_address(buf);
 
-	if(	fd < 0 || fd>=128) return -1;
+	struct page * p = spt_find_page (&thread_current()->spt, buffer);
 	
-	struct thread *cur = thread_current();
-	struct file *fileobj = cur->fdt[fd];
-
-	if (fileobj == NULL) return -1;
-	
-	/* STDIN일 때: */
-	if (fd == 0) {
-		char key;
-		for (read_count = 0; read_count < size; read_count++) {
-			key  = input_getc();
-			*buf++ = key;
-			if (key == '\0') break;
-		}
+	if(p!=NULL && !p->writable){
+		exit(-1);
 	}
+
 	/* STDOUT일 때: -1 반환 */
-	else if (fd == 1) return -1;
-	else {
-		lock_acquire(&filesys_lock);
-		read_count = file_read(fileobj, buffer, size);
-		lock_release(&filesys_lock);
+	if (fd == 1) return -1;
+	/* STDIN일 때: */
+	if (fd == 0) return input_getc();
 
-	}
-	return read_count;
+	struct thread *cur = thread_current();
+	off_t buff_size;
+	struct list_elem * e = find_fd_in_fdt(cur,fd);
+	if(e == NULL) return -1;
+
+	struct file_descriptor * file_des = list_entry(e,struct file_descriptor, elem);
+	if(file_des->file == NULL) return -1;
+
+	lock_acquire(&filesys_lock);
+
+	buff_size = file_read(file_des->file, buffer, size);
+	lock_release(&filesys_lock);
+	
+	return buff_size;
 }
 
 
 
 // 10.
 int write (int fd, const void *buffer, unsigned size) {
-	check_address(buffer);
-	// check_address(buffer + size);
+	unsigned char *buf = buffer;
+	check_address(buf);
 
-	if(	fd < 0 || fd >= 128) return -1;
-	struct thread *cur = thread_current();
-	struct file *fileobj = cur->fdt[fd];
-	if (fileobj == NULL) return -1;
+	if(fd <= 0) return -1;
 
-	int write_count;
 	if (fd == 1) {
 		putbuf(buffer, size);
-		write_count = size;
+		return size;
 	}
-	else if (fd == 0) return -1;
-	else {
-		lock_acquire(&filesys_lock);
-		write_count = file_write(fileobj, buffer, size);
-		lock_release(&filesys_lock);
-	}
-	return write_count;
+
+	struct thread *cur = thread_current();
+	struct list_elem * e = find_fd_in_fdt(cur,fd);
+	
+	if(e == NULL) return -1;
+
+	struct file_descriptor * file_des = list_entry(e,struct file_descriptor, elem);
+	if(file_des->file == NULL) return -1;
+
+	lock_acquire(&filesys_lock);
+	off_t write_size = file_write(file_des->file, buffer, size);
+	lock_release(&filesys_lock);
+	
+	return write_size;
 }
 // 11.
 void seek(int fd, unsigned position)
 {
-    if(	fd < 2 || fd >= 128) return;
-		struct thread *cur = thread_current();
-    struct file *file = cur->fdt[fd];
-    if(file == NULL)
-        return;
-    file_seek(file, position);
+	struct thread *cur = thread_current();
+	struct list_elem * e = find_fd_in_fdt(cur,fd);
+	
+	if(e == NULL) return;
+
+	struct file_descriptor * file_des = list_entry(e,struct file_descriptor, elem);
+	if(file_des->file == NULL) return;
+
+	file_seek(file_des->file, position);
 }
 // 12.
 unsigned tell(int fd)
 {
 
-		if(	fd < 2 || fd >= 128) return;
-		struct thread *cur = thread_current();
-    struct file *file = cur->fdt[fd];
-    if(file == NULL)
-        return;
-    return file_tell(file);
+	struct thread *cur = thread_current();
+	struct list_elem * e = find_fd_in_fdt(cur,fd);
+	
+	if(e == NULL) return;
+
+	struct file_descriptor * file_des = list_entry(e,struct file_descriptor, elem);
+	if(file_des->file == NULL) return;
+  return file_tell(file_des->file);
 }
 
 // 13.
 void close(int fd)
 {
-		if(	fd < 2 || fd >= 128) return;
-		struct thread *cur = thread_current();
-    struct file *file = cur->fdt[fd];
-    if(file == NULL) return;
-    file_close(file);
-    cur->fdt[fd] = NULL;
+	struct thread *cur = thread_current();
+	struct list_elem * e = find_fd_in_fdt(cur,fd);
+	
+	if(e == NULL) return;
+
+	struct file_descriptor * file_des = list_entry(e,struct file_descriptor, elem);
+	if(file_des->file == NULL) return;
+
+	file_close(file_des->file);
+	list_remove(&file_des->elem);
+}
+
+void *mmap(void *addr, size_t length, int writable, int fd, off_t offset)
+{
+	// check_address(addr);
+	struct thread *cur = thread_current();
+	if(fd<2 || fd > 128) return NULL;
+	if (!addr || addr != pg_round_down(addr))
+		return NULL;
+
+	if (offset != pg_round_down(offset))
+		return NULL;
+
+	if(!(addr + length)) return NULL;
+
+	if (!is_user_vaddr(addr) || !is_user_vaddr((uint64_t)addr + (uint64_t)length))
+		return NULL;
+
+	if (spt_find_page(&thread_current()->spt, addr))
+		return NULL;
+
+	struct list_elem * e = find_fd_in_fdt(cur,fd);
+	if(e == NULL) return NULL;
+	struct file_descriptor * file_des = list_entry(e,struct file_descriptor, elem);
+
+	if(file_des->file == NULL) return -1;
+	if (file_length(file_des->file) == 0 || (int) length == 0)
+		return NULL;
+
+	return do_mmap(addr, length, writable, file_des->file, offset); // 파일이 매핑된 가상 주소 반환
+}
+
+void munmap(void *addr)
+{
+	// check_address(addr);
+	do_munmap(addr);
 }
 
 void
@@ -243,7 +306,9 @@ syscall_init (void) {
 void
 syscall_handler (struct intr_frame *f) {
 	int sys_number = f->R.rax; // rax: 시스템 콜 넘버
-	// printf("sys_number : %d\n",sys_number);
+#ifdef VM
+	thread_current()->rsp = f->rsp;
+#endif
     /* 
 	인자 들어오는 순서:
 	1번째 인자: %rdi
@@ -296,8 +361,12 @@ syscall_handler (struct intr_frame *f) {
 			break;
 		case SYS_CLOSE:
 			close(f->R.rdi);
-		default:
+			break;
+		case SYS_MMAP:
+			f->R.rax = mmap(f->R.rdi, f->R.rsi, f->R.rdx, f->R.r10, f->R.r8);
+			break;
+		case SYS_MUNMAP:
+			munmap(f->R.rdi);
 			break;
 	}
-	// printf ("system call!\n");
 }

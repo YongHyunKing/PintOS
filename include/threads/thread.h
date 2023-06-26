@@ -30,6 +30,14 @@ typedef int tid_t;
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
 
+struct file_descriptor
+{
+	struct list_elem elem;
+	struct file *file;
+	int fd;	
+};
+
+
 /* A kernel thread or user process.
  *
  * Each thread structure is stored in its own 4 kB page.  The
@@ -109,8 +117,10 @@ struct thread {
 	/* Project 2 */
 	int exit_status;
 	//struct file * fdt[128];
-	struct file ** fdt;
-	int fd;
+	// struct file ** fdt;
+	// int fd;
+	struct list fdt;
+	int next_fd;
 
 	struct intr_frame userland_if; 
 
@@ -131,6 +141,8 @@ struct thread {
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */
 	struct supplemental_page_table spt;
+	/* Project 3 */
+	void * rsp;
 #endif
 
 	/* Owned by thread.c. */
@@ -181,5 +193,7 @@ void preemption(void);
 void priority_donation(void);
 void remove_donators (struct lock *lock);
 void update_priority (void);
+
+struct list all_thread;
 
 #endif /* threads/thread.h */

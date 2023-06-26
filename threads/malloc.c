@@ -9,6 +9,9 @@
 #include "threads/synch.h"
 #include "threads/vaddr.h"
 
+/* Project 3 */
+#include "threads/interrupt.h"
+
 /* A simple implementation of malloc().
 
    The size of each request, in bytes, is rounded up to a power
@@ -86,16 +89,21 @@ malloc (size_t size) {
 	struct desc *d;
 	struct block *b;
 	struct arena *a;
-
+	enum intr_level old_level;
+	old_level = intr_disable ();
+		
 	/* A null pointer satisfies a request for 0 bytes. */
-	if (size == 0)
+	if (size == 0){
+		intr_set_level (old_level);
 		return NULL;
+	}
 
 	/* Find the smallest descriptor that satisfies a SIZE-byte
 	   request. */
 	for (d = descs; d < descs + desc_cnt; d++)
 		if (d->block_size >= size)
 			break;
+	intr_set_level (old_level);
 	if (d == descs + desc_cnt) {
 		/* SIZE is too big for any descriptor.
 		   Allocate enough pages to hold SIZE plus an arena. */
